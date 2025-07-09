@@ -1,5 +1,5 @@
 import base64
-
+import io
 import modal
 import fastapi
 import librosa
@@ -8,10 +8,13 @@ import torchaudio.transforms as t
 import torch
 from model import AudioCNN
 from pydantic import BaseModel
+import soundfile as sf
+import numpy as np
 
 app = modal.App("audio-cnn-inference")
 image = (modal.Image.debian_slim()
          .pip_install_from_requirements("requirements.txt")
+         .apt_install(["libsndfile1"])
          .add_local_python_source("model")
          )
 model_volume = modal.Volume.from_name("esc-model")
@@ -61,4 +64,25 @@ class AudioClassifier:
     @modal.fastapi_endpoint(method="POST")
     def inference(self, request: InferenceRequest):
         audio_bytes = base64.b64decode(request.audio_data)
+        audio_data, sample_rate = sf.read(io.BytesIO(audio_bytes), dtype='float32')
+
+        if audio_data.ndim > 1:
+            audio_data = np.mean(audio_data, axis=1)
+
+        if sample_rate != 22050:
+            audio_data = librosa.resample(audio_data, sample_rate, 22050)
+
+        spectrogram = self.audio_processor.process_audio_chunk(audio_data)
+        spectrogram = spectrogram.to(self.device)
+
+        with torch.no_grad():
+            output = self.model(spectrogram)
+            output = torch.nan_to_num(output)
+            probabilities = torch.softmax(output, dim=1) # dim=0 batch, dim=1 class (batch_size, num_classes)
+            top3_probs, top3_indices = torch.topk(probabilities[0], 3)
+            predictions = [{"class": self.classes[idx.item()],"confidence": prob.item()} for prob, idx in zip(top3_probs, top3_indices)]
+
+        response = {"predictions": predictions}
+
+        return response
 
