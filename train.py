@@ -1,7 +1,18 @@
 import modal
-from torch.utils.data import Dataset
+import torch
+import torchaudio.transforms
+from torch.utils.data import Dataset, DataLoader
 from pathlib import Path
 import pandas as pd
+import torchaudio
+import torch.nn as nn
+import torchaudio.transforms as t
+from model import AudioCNN
+import torch.optim as optim
+from torch.optim.lr_scheduler import OneCycleLR
+from tqdm import tqdm
+import numpy as np
+from torch.utils.tensorboard import SummaryWriter
 
 app = modal.App("audio-cnn")
 image = (modal.Image.debian_slim()
@@ -39,13 +50,150 @@ class ESC50Dataset(Dataset):
         return len(self.metadata)
 
     def __getitem__(self, idx):
-        pass
+        row = self.metadata.iloc[idx]
+        audio_path = self.data_dir / "audio" / row['filename']
+        waveform, sample_rate = torchaudio.load(audio_path)
 
+        if waveform.shape[0] > 1:
+            waveform = torch.mean(waveform, dim=0, keepdim=True)
+
+        if self.transform:
+            spectrogram = self.transform(waveform)
+        else:
+            spectrogram = waveform
+
+        return spectrogram, row["label"]
+
+def mix_data(x, y):
+    lam = np.random.beta(0.2, 0.2)
+    batch_size = x.size(0)
+    index = torch.randperm(batch_size).to(x.device)
+    mixed_x = lam * x + (1 - lam) * x[index, :]
+    y_a, y_b = y, y[index]
+    return mixed_x, y_a, y_b, lam
+
+def mix_criterion(criterion, pred, y_a, y_b, lam):
+    return lam * criterion(pred, y_a) + (1 - lam) * criterion(pred, y_b)
 
 
 @app.function(image=image, gpu="A10G", volumes={"/data": volume, "/models": model_volume}, timeout=60 * 60 * 3)
 def train():
+    from datetime import datetime
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    log_dir = f'/models/tensorboard_logs/run_{timestamp}'
+    writer = SummaryWriter(log_dir=log_dir)
+    esc50_dir = Path("/opt/esc-50-data")
+    train_transform = nn.Sequential(
+        t.MelSpectrogram(
+            sample_rate=22050,
+            n_fft=1024,
+            hop_length=512,
+            n_mels=128,
+            f_min=0,
+            f_max=11025
+        ),
+        t.AmplitudeToDB(),
+        t.FrequencyMasking(freq_mask_param=30),
+        t.TimeMasking(time_mask_param=80)
+    )
+    val_transform = nn.Sequential(
+        t.MelSpectrogram(
+            sample_rate=22050,
+            n_fft=1024,
+            hop_length=512,
+            n_mels=128,
+            f_min=0,
+            f_max=11025
+        ),
+        t.AmplitudeToDB()
+    )
+    train_dataset = ESC50Dataset(data_dir=esc50_dir, metadata_file=esc50_dir / "meta" / "esc50.csv", split="train", transform=train_transform)
+    val_dataset = ESC50Dataset(data_dir=esc50_dir, metadata_file=esc50_dir / "meta" / "esc50.csv", split="test", transform=val_transform)
+
+    print("Train dataset size:", len(train_dataset))
+    print("Val dataset size:", len(val_dataset))
+
+    train_dataloader = DataLoader(train_dataset, batch_size=32, shuffle=True)
+    val_dataloader = DataLoader(val_dataset, batch_size=32, shuffle=False)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = AudioCNN(num_classes=len(train_dataset.classes)).to(device)
+    num_epochs = 100
+    criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
+    optimizer = optim.AdamW(model.parameters(), lr=0.0005, weight_decay=0.01)
+    scheduler = OneCycleLR(optimizer, max_lr=0.002, epochs=num_epochs, steps_per_epoch=len(train_dataloader), pct_start=0.1)
+    best_accuracy = 0.0
+
     print("Training...")
+
+    for epoch in range(num_epochs):
+        model.train()
+        epoch_loss = 0.0
+        progress_bar = tqdm(train_dataloader, desc=f'Epoch {epoch + 1}/{num_epochs}')
+
+        for data, target in progress_bar:
+            data, target = data.to(device), target.to(device)
+
+            if np.random.random() > 0.7:
+                data, target_a, target_b, lam = mix_data(data, target)
+                output = model(data)
+                loss = mix_criterion(criterion, output, target_a, target_b, lam)
+            else:
+                output = model(data)
+                loss = criterion(output, target)
+
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            scheduler.step()
+            epoch_loss += loss.item()
+            progress_bar.set_postfix({"loss": loss.item()})
+
+        avg_loss = epoch_loss / len(train_dataloader)
+        writer.add_scalar("Loss/Train", avg_loss, epoch)
+        writer.add_scalar("Learning_Rate", optimizer.param_groups[0]['lr'], epoch)
+        model.eval() # validate after each epoch
+        correct, total = 0, 0
+        val_loss = 0
+
+        with torch.no_grad():
+            for data, target in val_dataloader:
+                data, target = data.to(device), target.to(device)
+                output = model(data)
+                loss = criterion(output, target)
+                val_loss += loss.item()
+                _, predicted = torch.max(output.data, 1)
+                total += target.size(0)
+                comparison_mask = torch.eq(predicted, target)
+                num_correct = comparison_mask.sum()
+                correct += num_correct.item()
+
+
+        accuracy = 100 * correct / total
+        avg_val_loss = val_loss / len(val_dataloader)
+        writer.add_scalar("Loss/Validation", avg_val_loss, epoch)
+        writer.add_scalar("Accuracy/Validation", accuracy, epoch)
+
+        print(f"Epoch {epoch+1} Loss: {avg_loss:.3f} Val Loss: {avg_val_loss:.3f} Accuracy: {accuracy:.3f}%")
+
+        if accuracy > best_accuracy:
+            best_accuracy = accuracy
+            torch.save({
+                'model_state_dict': model.state_dict(),
+                'accuracy': accuracy,
+                'epoch': epoch,
+                'classes': train_dataset.classes,
+            },
+            '/models/best_model.pth')
+
+            print(f"New best model saved: {accuracy:.3f}%")
+
+    writer.close()
+
+    print(f"Training completed. Best accuracy: {best_accuracy:.3f}%")
+
+
+
+
 
 @app.local_entrypoint()
 def main():

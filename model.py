@@ -6,7 +6,7 @@ class ResidualBlock(nn.Module):
         super().__init__()
         self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=stride, padding=1, bias=False)
         self.bn1 = nn.BatchNorm2d(out_channels)
-        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=stride, padding=1, bias=False)
+        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1, bias=False)
         self.bn2 = nn.BatchNorm2d(out_channels)
         self.shortcut = nn.Sequential()
         self.use_shortcut = stride != 1 or in_channels != out_channels
@@ -34,9 +34,9 @@ class AudioCNN(nn.Module):
             nn.ReLU(inplace=True),
             nn.MaxPool2d(kernel_size=3, stride=2, padding=1))
         self.layer1 = nn.ModuleList([ResidualBlock(64, 64) for _ in range(3)])
-        self.layer2 = nn.ModuleList([ResidualBlock(64 if i == 0 else 128, 128) for i in range(4)])
-        self.layer3 = nn.ModuleList([ResidualBlock(128 if i == 0 else 256, 256) for i in range(6)])
-        self.layer4 = nn.ModuleList([ResidualBlock(256 if i == 0 else 512, 512) for i in range(3)])
+        self.layer2 = nn.ModuleList([ResidualBlock(64 if i == 0 else 128, 128, stride=2 if i == 0 else 1) for i in range(4)])
+        self.layer3 = nn.ModuleList([ResidualBlock(128 if i == 0 else 256, 256, stride=2 if i == 0 else 1) for i in range(6)])
+        self.layer4 = nn.ModuleList([ResidualBlock(256 if i == 0 else 512, 512, stride=2 if i == 0 else 1) for i in range(3)])
         self.avg_pool = nn.AdaptiveAvgPool2d((1, 1))
         self.dropout = nn.Dropout(0.5)
         self.fc1 = nn.Linear(512, num_classes)
