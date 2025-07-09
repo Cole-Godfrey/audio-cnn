@@ -3,6 +3,7 @@ import io
 import modal
 import fastapi
 import librosa
+import requests
 import torch.nn as nn
 import torchaudio.transforms as t
 import torch
@@ -85,4 +86,22 @@ class AudioClassifier:
         response = {"predictions": predictions}
 
         return response
+
+@app.local_entrypoint()
+def main():
+    audio_data, sample_rate = sf.read("dog.wav")
+    buffer = io.BytesIO()
+    sf.write(buffer, audio_data, 22050, format="WAV")
+    audio_b64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
+    payload = {"audio_data": audio_b64}
+    server = AudioClassifier()
+    url = server.inference.get_web_url()
+    response = requests.post(url, json=payload)
+    response.raise_for_status()
+    result = response.json()
+
+    print("Top predictions:")
+
+    for prediction in result.get("predictions", []):
+        print(f"{prediction['class']}: {prediction['confidence']:0.2%}")
 
