@@ -1,0 +1,6 @@
+sample_rate 22050, n_mels 128: 84.75%
+sample_rate 44100, n_mels 64: 80.75%
+sample_rate 44100, n_mels 128: 78%
+
+This is interesting because the sample rate in the dataset is 44,100, and pytorch gave me a warning about how the n_mels was too high.
+I am not quite sure why using half the sample rate of the audio in the dataset and ignoring pytorch's warning leads to better accuracy, but it does, so I used that model.
