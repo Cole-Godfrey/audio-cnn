@@ -1,8 +1,8 @@
 const Waveform = ({ data, title } : {data: number[], title: string}) => {
   if (!data || data.length === 0) return null;
 
-  const width = 600;
-  const height = 300;
+  const width = 1400;
+  const height = 500;
   const centerY = height / 2;
   const validData = data.filter((val) => !isNaN(val) && isFinite(val));
 
@@ -27,7 +27,7 @@ const Waveform = ({ data, title } : {data: number[], title: string}) => {
 
   return <div className="flex h-full w-full flex-col">
     <div className="flex flex-1 items-center justify-center">
-      <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="xMidYMid meet" className="block max-w-full rounded border border-stone-200 max-h-300">
+      <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="xMidYMid meet" className="block max-w-full rounded border border-stone-200 max-h-[300px]">
         <path d={`M 0 ${centerY} H ${width}`} stroke="#e7e5e4" strokeWidth="1"/>
         <path d={pathData} fill="none" stroke="#44403c" strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round"/>
       </svg>

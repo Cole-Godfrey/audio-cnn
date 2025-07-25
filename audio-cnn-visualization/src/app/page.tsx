@@ -1,8 +1,7 @@
 "use client"
 
-import Link from "next/link";
 import { Button } from "~/components/ui/button";
-import {useState} from "react";
+import React, {useState} from "react";
 import { Badge } from "~/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
 import {Progress} from "~/components/ui/progress";
@@ -153,7 +152,7 @@ export default function HomePage() {
         setIsLoading(false);
       }
     };
-    reader.onerror = (e) => {
+    reader.onerror = () => {
       setError("Failed to read the file.")
       setIsLoading(false);
     }
@@ -212,8 +211,8 @@ export default function HomePage() {
               </CardHeader>
               <CardContent>
                 <FeatureMap data={vizData.input_spectrogram.values} title={`${vizData.input_spectrogram.shape.join(" x ")}`} internal={false} spectrogram={true}/>
-                <div className="mt-5 flex justify-end">
-                  <ColorScale width={200} height={16} min={-1} max={1}/>
+                <div className="mt-5 flex justify-center p-3">
+                  <ColorScale width={400} height={16} min={-1} max={1}/>
                 </div>
               </CardContent>
             </Card>
